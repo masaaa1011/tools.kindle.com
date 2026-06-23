@@ -4,7 +4,6 @@ import os, os.path as osp
 import datetime, time
 from PIL import Image, ImageGrab
 import img2pdf
-import easyocr
 from tkinter import messagebox, simpledialog, filedialog
 import tkinter as tk
 import cv2
@@ -12,8 +11,9 @@ import numpy as np
 from ctypes import *
 from ctypes.wintypes import *
 
-_ocr_reader = None
-_ocr_reader_gpu = None
+_paddle_reader = None
+_easy_reader = None
+_easy_reader_gpu = None
 
 # グローバル変数の設定
 pag.FAILSAFE = False               # フェイルセーフを無効化
@@ -150,13 +150,35 @@ def capture_and_save_pages(bbox, title):
         page += 1
         pag.press(page_change_key)
 
-def _get_ocr_reader(gpu=False):
-    global _ocr_reader, _ocr_reader_gpu
-    if _ocr_reader is None or _ocr_reader_gpu != gpu:
-        print("EasyOCRモデルを初期化しています（初回は時間がかかります）...")
-        _ocr_reader = easyocr.Reader(['ja', 'en'], gpu=gpu)
-        _ocr_reader_gpu = gpu
-    return _ocr_reader
+def _get_paddle_reader():
+    global _paddle_reader
+    if _paddle_reader is None:
+        print("PaddleOCRモデルを初期化しています（初回は時間がかかります）...")
+        import warnings, sys, os
+        from paddleocr import PaddleOCR
+        os.environ.setdefault('GLOG_minloglevel', '3')
+        os.environ.setdefault('FLAGS_logtostderr', '0')
+        os.environ.setdefault('PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK', 'True')
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            devnull = open(os.devnull, 'w')
+            old_stdout, old_stderr = sys.stdout, sys.stderr
+            sys.stdout = sys.stderr = devnull
+            try:
+                _paddle_reader = PaddleOCR(lang='japan', device='cpu')
+            finally:
+                sys.stdout, sys.stderr = old_stdout, old_stderr
+                devnull.close()
+    return _paddle_reader
+
+def _get_easy_reader(gpu=False):
+    global _easy_reader, _easy_reader_gpu
+    if _easy_reader is None or _easy_reader_gpu != gpu:
+        print(f"EasyOCRモデルを初期化しています（{'GPU' if gpu else 'CPU'}）...")
+        import easyocr
+        _easy_reader = easyocr.Reader(['ja', 'en'], gpu=gpu)
+        _easy_reader_gpu = gpu
+    return _easy_reader
 
 def _make_tounicode_cmap():
     """UTF-16BEのIdentity-H用ToUnicode CMap（BMP全域）"""
@@ -250,19 +272,38 @@ def _embed_text_layer(pdf_path, png_files, ocr_results):
 
         pdf.save(pdf_path)
 
-def apply_ocr(pdf_path, png_files, gpu=False):
-    """EasyOCRでテキストを認識→ログ出力→PDFにテキスト層を埋め込む"""
-    reader = _get_ocr_reader(gpu=gpu)
-    all_results = []
+def apply_ocr(pdf_path, png_files, engine='paddle', gpu=False):
+    """OCRでテキストを認識→ログ出力→PDFにテキスト層を埋め込む"""
+    if engine == 'paddle':
+        reader = _get_paddle_reader()
+    else:
+        reader = _get_easy_reader(gpu=gpu)
 
+    all_results = []
     for i, png_path in enumerate(png_files, start=1):
         print(f"\n--- Page {i} ({osp.basename(png_path)}) ---")
         img_arr = np.array(Image.open(png_path).convert('RGB'))
-        detections = reader.readtext(img_arr)
-        page_results = []
-        for (bbox, text, conf) in detections:
+
+        if engine == 'paddle':
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter('ignore', DeprecationWarning)
+                result = reader.ocr(img_arr)
+            r = result[0] if result else {}
+            page_results = [
+                (poly.tolist(), text, conf)
+                for poly, text, conf in zip(
+                    r.get('rec_polys', []), r.get('rec_texts', []), r.get('rec_scores', [])
+                )
+            ]
+        else:
+            page_results = [
+                (bbox, text, conf)
+                for bbox, text, conf in reader.readtext(img_arr)
+            ]
+
+        for _, text, conf in page_results:
             print(f"  [{conf:.2f}] {text}")
-            page_results.append((bbox, text, conf))
         all_results.append(page_results)
 
     _embed_text_layer(pdf_path, png_files, all_results)
@@ -270,16 +311,17 @@ def apply_ocr(pdf_path, png_files, gpu=False):
 
 
 def ask_pdf_split_mode(root):
-    """単一 or 分割を選択させる。(mode, chunk_size, use_ocr) を返す。キャンセル時は (None, None, None)"""
+    """単一 or 分割を選択させる。(mode, chunk_size, use_ocr, engine, use_gpu) を返す。キャンセル時は全て None"""
     dialog = tk.Toplevel(root)
     dialog.title("書き出しモード選択")
     dialog.resizable(False, False)
 
     tk.Label(dialog, text="書き出し方法を選択してください", padx=20, pady=12).pack()
 
-    mode_var = tk.StringVar(value='single')
-    chunk_var = tk.DoubleVar(value=50.0)
+    mode_var = tk.StringVar(value='split')
+    chunk_var = tk.DoubleVar(value=25.0)
     ocr_var = tk.BooleanVar(value=False)
+    engine_var = tk.StringVar(value='paddle')
     gpu_var = tk.BooleanVar(value=False)
     result = tk.StringVar(value='cancel')
 
@@ -299,19 +341,32 @@ def ask_pdf_split_mode(root):
     ocr_frame = tk.LabelFrame(dialog, text="OCR", padx=12, pady=6)
     ocr_frame.pack(padx=20, pady=(8, 0), fill='x')
 
-    gpu_cpu_frame = tk.Frame(ocr_frame)
+    engine_frame = tk.Frame(ocr_frame)
+    gpu_frame = tk.Frame(engine_frame)
+
+    def on_engine_change(*_):
+        if engine_var.get() == 'easy':
+            gpu_frame.pack(anchor='w', padx=24, pady=(2, 0))
+        else:
+            gpu_frame.pack_forget()
 
     def on_ocr_toggle():
         if ocr_var.get():
-            gpu_cpu_frame.pack(anchor='w', padx=20, pady=(2, 0))
+            engine_frame.pack(anchor='w', padx=8, pady=(4, 0))
+            on_engine_change()
         else:
-            gpu_cpu_frame.pack_forget()
+            engine_frame.pack_forget()
 
     tk.Checkbutton(ocr_frame, text="OCRテキストを埋め込む（初回はモデルDLあり・処理に時間がかかります）",
                    variable=ocr_var, command=on_ocr_toggle).pack(anchor='w')
 
-    tk.Radiobutton(gpu_cpu_frame, text="CPU（安定）", variable=gpu_var, value=False).pack(side='left', padx=4)
-    tk.Radiobutton(gpu_cpu_frame, text="GPU（高速）", variable=gpu_var, value=True).pack(side='left', padx=4)
+    tk.Radiobutton(engine_frame, text="PaddleOCR（高精度・CPU）",
+                   variable=engine_var, value='paddle', command=on_engine_change).pack(anchor='w')
+    tk.Radiobutton(engine_frame, text="EasyOCR（GPU対応）",
+                   variable=engine_var, value='easy', command=on_engine_change).pack(anchor='w')
+
+    tk.Radiobutton(gpu_frame, text="CPU", variable=gpu_var, value=False).pack(side='left', padx=4)
+    tk.Radiobutton(gpu_frame, text="GPU", variable=gpu_var, value=True).pack(side='left', padx=4)
 
     btn_frame = tk.Frame(dialog, padx=20, pady=10)
     btn_frame.pack()
@@ -333,8 +388,8 @@ def ask_pdf_split_mode(root):
 
     mode = result.get()
     if mode == 'cancel':
-        return None, None, None, None
-    return mode, chunk_var.get(), ocr_var.get(), gpu_var.get()
+        return None, None, None, None, None
+    return mode, chunk_var.get(), ocr_var.get(), engine_var.get(), gpu_var.get()
 
 
 def convert_png_to_pdf():
@@ -359,7 +414,7 @@ def convert_png_to_pdf():
         root.destroy()
         return
 
-    mode, chunk_size, use_ocr, use_gpu = ask_pdf_split_mode(root)
+    mode, chunk_size, use_ocr, ocr_engine, use_gpu = ask_pdf_split_mode(root)
     if mode is None:
         root.destroy()
         return
@@ -371,7 +426,7 @@ def convert_png_to_pdf():
             f.write(img2pdf.convert(png_list))
         if use_ocr:
             try:
-                apply_ocr(path, png_list, gpu=use_gpu)
+                apply_ocr(path, png_list, engine=ocr_engine, gpu=use_gpu)
             except Exception as e:
                 raise RuntimeError(f"OCR処理に失敗しました。\n詳細: {e}")
 
