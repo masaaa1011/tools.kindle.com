@@ -5,8 +5,6 @@ import datetime, time
 from PIL import Image, ImageGrab
 import img2pdf
 import easyocr
-import io
-from fpdf import FPDF
 from tkinter import messagebox, simpledialog, filedialog
 import tkinter as tk
 import cv2
@@ -15,6 +13,7 @@ from ctypes import *
 from ctypes.wintypes import *
 
 _ocr_reader = None
+_ocr_reader_gpu = None
 
 # グローバル変数の設定
 pag.FAILSAFE = False               # フェイルセーフを無効化
@@ -151,90 +150,109 @@ def capture_and_save_pages(bbox, title):
         page += 1
         pag.press(page_change_key)
 
-def _get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None:
+def _get_ocr_reader(gpu=False):
+    global _ocr_reader, _ocr_reader_gpu
+    if _ocr_reader is None or _ocr_reader_gpu != gpu:
         print("EasyOCRモデルを初期化しています（初回は時間がかかります）...")
-        _ocr_reader = easyocr.Reader(['ja', 'en'])
+        _ocr_reader = easyocr.Reader(['ja', 'en'], gpu=gpu)
+        _ocr_reader_gpu = gpu
     return _ocr_reader
 
-def _find_japanese_font():
-    candidates = [
-        r"C:\Windows\Fonts\YuGothM.ttf",
-        r"C:\Windows\Fonts\YuGothR.ttf",
-        r"C:\Windows\Fonts\meiryo.ttc",
-        r"C:\Windows\Fonts\meiryob.ttc",
-        r"C:\Windows\Fonts\msgothic.ttc",
-    ]
-    return next((f for f in candidates if osp.exists(f)), None)
+def _make_tounicode_cmap():
+    """UTF-16BEのIdentity-H用ToUnicode CMap（BMP全域）"""
+    return (
+        b"/CIDInit /ProcSet findresource begin\n"
+        b"12 dict begin\n"
+        b"begincmap\n"
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS2) /Supplement 0 >> def\n"
+        b"/CMapName /Adobe-Identity-UCS2 def\n"
+        b"/CMapType 2 def\n"
+        b"1 begincodespacerange\n"
+        b"<0000> <FFFF>\n"
+        b"endcodespacerange\n"
+        b"2 beginbfrange\n"
+        b"<0020> <D7FF> <0020>\n"
+        b"<E000> <FFFF> <E000>\n"
+        b"endbfrange\n"
+        b"endcmap\n"
+        b"CMapToUnicode end"
+    )
 
-def _build_text_pdf(png_files, ocr_results, font_path, page_dims):
-    """各ページのOCRテキストを不可視テキスト層として持つPDFを生成"""
-    pdf = FPDF(unit='pt')
-    pdf.set_auto_page_break(False)
-    pdf.add_font('jpfont', fname=font_path)
-
-    for png_path, page_ocr, (pw_pt, ph_pt) in zip(png_files, ocr_results, page_dims):
-        pdf.add_page(format=(pw_pt, ph_pt))
-        img = Image.open(png_path)
-        img_w, img_h = img.size
-        sx = pw_pt / img_w
-        sy = ph_pt / img_h
-
-        for (bbox, text, conf) in page_ocr:
-            x_pt = float(bbox[0][0]) * sx
-            y_pt = float(bbox[0][1]) * sy
-            h_pt = (float(bbox[2][1]) - float(bbox[0][1])) * sy
-            font_size = max(6.0, h_pt)
-
-            pdf.set_font('jpfont', size=font_size)
-            pdf.set_text_rendering_mode(3)  # 不可視
-            pdf.set_xy(x_pt, y_pt)
-            pdf.cell(text=text)
-
-    return bytes(pdf.output())
-
-def _merge_text_layer(pdf_path, text_pdf_bytes):
-    """テキスト層PDFをimgPDFに重ね合わせる"""
+def _embed_text_layer(pdf_path, png_files, ocr_results):
+    """pikepdfで不可視テキスト層をPDFに直接書き込む"""
     import pikepdf
-    with pikepdf.open(pdf_path, allow_overwriting_input=True) as img_pdf:
-        with pikepdf.open(io.BytesIO(text_pdf_bytes)) as txt_pdf:
-            for img_page, txt_page in zip(img_pdf.pages, txt_pdf.pages):
-                txt_contents = txt_page.get("/Contents")
-                if txt_contents is None:
-                    continue
 
-                if isinstance(txt_contents, pikepdf.Array):
-                    appended = [img_pdf.make_indirect(img_pdf.copy_foreign(s))
-                                for s in txt_contents]
-                else:
-                    appended = [img_pdf.make_indirect(img_pdf.copy_foreign(txt_contents))]
+    tounicode_stream = pikepdf.Stream(None, _make_tounicode_cmap())
 
-                img_contents = img_page.get("/Contents")
-                if img_contents is None:
-                    img_page["/Contents"] = (appended[0] if len(appended) == 1
-                                             else pikepdf.Array(appended))
-                else:
-                    if not isinstance(img_contents, pikepdf.Array):
-                        img_page["/Contents"] = pikepdf.Array([img_contents])
-                    for s in appended:
-                        img_page["/Contents"].append(s)
+    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
+        tounicode_ref = pdf.make_indirect(pikepdf.Stream(pdf, _make_tounicode_cmap()))
 
-                txt_res = txt_page.get("/Resources")
-                if txt_res is None or "/Font" not in txt_res:
-                    continue
-                if "/Resources" not in img_page:
-                    img_page["/Resources"] = pikepdf.Dictionary()
-                if "/Font" not in img_page["/Resources"]:
-                    img_page["/Resources"]["/Font"] = pikepdf.Dictionary()
-                for k, v in txt_res["/Font"].items():
-                    img_page["/Resources"]["/Font"][k] = img_pdf.copy_foreign(v)
+        # Type0 CIDFont（Identity-H / Unicode）の定義
+        cid_font = pdf.make_indirect(pikepdf.Dictionary(
+            Type=pikepdf.Name("/Font"),
+            Subtype=pikepdf.Name("/CIDFontType2"),
+            BaseFont=pikepdf.Name("/Arial-Unicode"),
+            CIDSystemInfo=pikepdf.Dictionary(
+                Registry=pikepdf.String("Adobe"),
+                Ordering=pikepdf.String("UCS2"),
+                Supplement=0,
+            ),
+            DW=1000,
+        ))
+        type0_font = pdf.make_indirect(pikepdf.Dictionary(
+            Type=pikepdf.Name("/Font"),
+            Subtype=pikepdf.Name("/Type0"),
+            BaseFont=pikepdf.Name("/Arial-Unicode"),
+            Encoding=pikepdf.Name("/Identity-H"),
+            DescendantFonts=pikepdf.Array([cid_font]),
+            ToUnicode=tounicode_ref,
+        ))
 
-        img_pdf.save(pdf_path)
+        for page, png_path, page_ocr in zip(pdf.pages, png_files, ocr_results):
+            if not page_ocr:
+                continue
 
-def apply_ocr(pdf_path, png_files):
+            img = Image.open(png_path)
+            img_w, img_h = img.size
+            mb = page.mediabox
+            pw = float(mb[2])
+            ph = float(mb[3])
+            sx = pw / img_w
+            sy = ph / img_h
+
+            lines = [b"q", b"BT", b"3 Tr"]  # 描画状態保存 / テキスト開始 / 不可視モード
+            for (bbox, text, conf) in page_ocr:
+                x = float(bbox[0][0]) * sx
+                y = ph - float(bbox[2][1]) * sy   # PDF座標はY軸が反転
+                h = (float(bbox[2][1]) - float(bbox[0][1])) * sy
+                fs = max(8.0, h)
+                hex_str = text.encode('utf-16-be').hex().upper()
+                lines.append(f"/F1 {fs:.1f} Tf".encode())
+                lines.append(f"1 0 0 1 {x:.1f} {y:.1f} Tm".encode())
+                lines.append(f"<{hex_str}> Tj".encode())
+            lines.extend([b"ET", b"Q"])
+
+            new_stream = pdf.make_indirect(pikepdf.Stream(pdf, b"\n".join(lines)))
+
+            existing = page.get("/Contents")
+            if existing is None:
+                page["/Contents"] = new_stream
+            elif isinstance(existing, pikepdf.Array):
+                existing.append(new_stream)
+            else:
+                page["/Contents"] = pikepdf.Array([existing, new_stream])
+
+            if "/Resources" not in page:
+                page["/Resources"] = pikepdf.Dictionary()
+            if "/Font" not in page["/Resources"]:
+                page["/Resources"]["/Font"] = pikepdf.Dictionary()
+            page["/Resources"]["/Font"]["/F1"] = type0_font
+
+        pdf.save(pdf_path)
+
+def apply_ocr(pdf_path, png_files, gpu=False):
     """EasyOCRでテキストを認識→ログ出力→PDFにテキスト層を埋め込む"""
-    reader = _get_ocr_reader()
+    reader = _get_ocr_reader(gpu=gpu)
     all_results = []
 
     for i, png_path in enumerate(png_files, start=1):
@@ -247,20 +265,7 @@ def apply_ocr(pdf_path, png_files):
             page_results.append((bbox, text, conf))
         all_results.append(page_results)
 
-    font_path = _find_japanese_font()
-    if font_path is None:
-        print("警告: 日本語フォントが見つかりません。テキスト層の埋め込みをスキップします。")
-        return
-
-    import pikepdf
-    page_dims = []
-    with pikepdf.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            mb = page.mediabox
-            page_dims.append((float(mb[2]), float(mb[3])))
-
-    text_pdf_bytes = _build_text_pdf(png_files, all_results, font_path, page_dims)
-    _merge_text_layer(pdf_path, text_pdf_bytes)
+    _embed_text_layer(pdf_path, png_files, all_results)
     print(f"\nテキスト層を埋め込みました: {pdf_path}")
 
 
@@ -275,6 +280,7 @@ def ask_pdf_split_mode(root):
     mode_var = tk.StringVar(value='single')
     chunk_var = tk.DoubleVar(value=50.0)
     ocr_var = tk.BooleanVar(value=False)
+    gpu_var = tk.BooleanVar(value=False)
     result = tk.StringVar(value='cancel')
 
     radio_frame = tk.Frame(dialog, padx=24)
@@ -292,8 +298,20 @@ def ask_pdf_split_mode(root):
 
     ocr_frame = tk.LabelFrame(dialog, text="OCR", padx=12, pady=6)
     ocr_frame.pack(padx=20, pady=(8, 0), fill='x')
+
+    gpu_cpu_frame = tk.Frame(ocr_frame)
+
+    def on_ocr_toggle():
+        if ocr_var.get():
+            gpu_cpu_frame.pack(anchor='w', padx=20, pady=(2, 0))
+        else:
+            gpu_cpu_frame.pack_forget()
+
     tk.Checkbutton(ocr_frame, text="OCRテキストを埋め込む（初回はモデルDLあり・処理に時間がかかります）",
-                   variable=ocr_var).pack(anchor='w')
+                   variable=ocr_var, command=on_ocr_toggle).pack(anchor='w')
+
+    tk.Radiobutton(gpu_cpu_frame, text="CPU（安定）", variable=gpu_var, value=False).pack(side='left', padx=4)
+    tk.Radiobutton(gpu_cpu_frame, text="GPU（高速）", variable=gpu_var, value=True).pack(side='left', padx=4)
 
     btn_frame = tk.Frame(dialog, padx=20, pady=10)
     btn_frame.pack()
@@ -315,8 +333,8 @@ def ask_pdf_split_mode(root):
 
     mode = result.get()
     if mode == 'cancel':
-        return None, None, None
-    return mode, chunk_var.get(), ocr_var.get()
+        return None, None, None, None
+    return mode, chunk_var.get(), ocr_var.get(), gpu_var.get()
 
 
 def convert_png_to_pdf():
@@ -341,7 +359,7 @@ def convert_png_to_pdf():
         root.destroy()
         return
 
-    mode, chunk_size, use_ocr = ask_pdf_split_mode(root)
+    mode, chunk_size, use_ocr, use_gpu = ask_pdf_split_mode(root)
     if mode is None:
         root.destroy()
         return
@@ -353,7 +371,7 @@ def convert_png_to_pdf():
             f.write(img2pdf.convert(png_list))
         if use_ocr:
             try:
-                apply_ocr(path, png_list)
+                apply_ocr(path, png_list, gpu=use_gpu)
             except Exception as e:
                 raise RuntimeError(f"OCR処理に失敗しました。\n詳細: {e}")
 
