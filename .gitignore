@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# uv
+.venv
+
+# EasyOCR（モデルキャッシュはホームディレクトリに保存されるためプロジェクト内には不要）
+.EasyOCR/
+
+# キャプチャ出力（PNG/PDF）
+*.png
+*.pdf
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDE
+.vscode/
+.idea/
