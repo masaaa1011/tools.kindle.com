@@ -14,6 +14,7 @@ from ctypes.wintypes import *
 _paddle_reader = None
 _easy_reader = None
 _easy_reader_gpu = None
+_rapid_reader = None
 
 # グローバル変数の設定
 pag.FAILSAFE = False               # フェイルセーフを無効化
@@ -165,7 +166,7 @@ def _get_paddle_reader():
             old_stdout, old_stderr = sys.stdout, sys.stderr
             sys.stdout = sys.stderr = devnull
             try:
-                _paddle_reader = PaddleOCR(lang='japan', device='cpu')
+                _paddle_reader = PaddleOCR(lang='japan', device='cpu', ocr_version='PP-OCRv4')
             finally:
                 sys.stdout, sys.stderr = old_stdout, old_stderr
                 devnull.close()
@@ -179,6 +180,18 @@ def _get_easy_reader(gpu=False):
         _easy_reader = easyocr.Reader(['ja', 'en'], gpu=gpu)
         _easy_reader_gpu = gpu
     return _easy_reader
+
+def _get_rapid_reader():
+    global _rapid_reader
+    if _rapid_reader is None:
+        print("RapidOCRモデルを初期化しています（DirectML GPU）...")
+        from rapidocr import RapidOCR, LangRec
+        _rapid_reader = RapidOCR(params={
+            'EngineConfig.onnxruntime.use_dml': True,
+            'Rec.lang_type': LangRec.JAPAN,
+            'Global.log_level': 'warning',
+        })
+    return _rapid_reader
 
 def _make_tounicode_cmap():
     """UTF-16BEのIdentity-H用ToUnicode CMap（BMP全域）"""
@@ -202,86 +215,96 @@ def _make_tounicode_cmap():
 
 def _embed_text_layer(pdf_path, png_files, ocr_results):
     """pikepdfで不可視テキスト層をPDFに直接書き込む"""
-    import pikepdf
+    import pikepdf, tempfile, os
 
-    tounicode_stream = pikepdf.Stream(None, _make_tounicode_cmap())
+    tmp_path = pdf_path + '.tmp.pdf'
+    try:
+        with pikepdf.open(pdf_path) as pdf:
+            tounicode_ref = pdf.make_indirect(pikepdf.Stream(pdf, _make_tounicode_cmap()))
 
-    with pikepdf.open(pdf_path, allow_overwriting_input=True) as pdf:
-        tounicode_ref = pdf.make_indirect(pikepdf.Stream(pdf, _make_tounicode_cmap()))
+            cid_font = pdf.make_indirect(pikepdf.Dictionary(
+                Type=pikepdf.Name("/Font"),
+                Subtype=pikepdf.Name("/CIDFontType2"),
+                BaseFont=pikepdf.Name("/Arial-Unicode"),
+                CIDSystemInfo=pikepdf.Dictionary(
+                    Registry=pikepdf.String("Adobe"),
+                    Ordering=pikepdf.String("UCS2"),
+                    Supplement=0,
+                ),
+                DW=1000,
+            ))
+            type0_font = pdf.make_indirect(pikepdf.Dictionary(
+                Type=pikepdf.Name("/Font"),
+                Subtype=pikepdf.Name("/Type0"),
+                BaseFont=pikepdf.Name("/Arial-Unicode"),
+                Encoding=pikepdf.Name("/Identity-H"),
+                DescendantFonts=pikepdf.Array([cid_font]),
+                ToUnicode=tounicode_ref,
+            ))
 
-        # Type0 CIDFont（Identity-H / Unicode）の定義
-        cid_font = pdf.make_indirect(pikepdf.Dictionary(
-            Type=pikepdf.Name("/Font"),
-            Subtype=pikepdf.Name("/CIDFontType2"),
-            BaseFont=pikepdf.Name("/Arial-Unicode"),
-            CIDSystemInfo=pikepdf.Dictionary(
-                Registry=pikepdf.String("Adobe"),
-                Ordering=pikepdf.String("UCS2"),
-                Supplement=0,
-            ),
-            DW=1000,
-        ))
-        type0_font = pdf.make_indirect(pikepdf.Dictionary(
-            Type=pikepdf.Name("/Font"),
-            Subtype=pikepdf.Name("/Type0"),
-            BaseFont=pikepdf.Name("/Arial-Unicode"),
-            Encoding=pikepdf.Name("/Identity-H"),
-            DescendantFonts=pikepdf.Array([cid_font]),
-            ToUnicode=tounicode_ref,
-        ))
+            total = len(pdf.pages)
+            for page_idx, (page, png_path, page_ocr) in enumerate(zip(pdf.pages, png_files, ocr_results), start=1):
+                print(f"  埋め込み中: Page {page_idx}/{total}", flush=True)
+                if not page_ocr:
+                    continue
 
-        for page, png_path, page_ocr in zip(pdf.pages, png_files, ocr_results):
-            if not page_ocr:
-                continue
+                img = Image.open(png_path)
+                img_w, img_h = img.size
+                mb = page.mediabox
+                pw = float(mb[2])
+                ph = float(mb[3])
+                sx = pw / img_w
+                sy = ph / img_h
 
-            img = Image.open(png_path)
-            img_w, img_h = img.size
-            mb = page.mediabox
-            pw = float(mb[2])
-            ph = float(mb[3])
-            sx = pw / img_w
-            sy = ph / img_h
+                lines = [b"q", b"BT", b"3 Tr"]
+                for (bbox, text, conf) in page_ocr:
+                    x = float(bbox[0][0]) * sx
+                    y = ph - float(bbox[2][1]) * sy
+                    h = (float(bbox[2][1]) - float(bbox[0][1])) * sy
+                    fs = max(8.0, h)
+                    hex_str = text.encode('utf-16-be').hex().upper()
+                    lines.append(f"/F1 {fs:.1f} Tf".encode())
+                    lines.append(f"1 0 0 1 {x:.1f} {y:.1f} Tm".encode())
+                    lines.append(f"<{hex_str}> Tj".encode())
+                lines.extend([b"ET", b"Q"])
 
-            lines = [b"q", b"BT", b"3 Tr"]  # 描画状態保存 / テキスト開始 / 不可視モード
-            for (bbox, text, conf) in page_ocr:
-                x = float(bbox[0][0]) * sx
-                y = ph - float(bbox[2][1]) * sy   # PDF座標はY軸が反転
-                h = (float(bbox[2][1]) - float(bbox[0][1])) * sy
-                fs = max(8.0, h)
-                hex_str = text.encode('utf-16-be').hex().upper()
-                lines.append(f"/F1 {fs:.1f} Tf".encode())
-                lines.append(f"1 0 0 1 {x:.1f} {y:.1f} Tm".encode())
-                lines.append(f"<{hex_str}> Tj".encode())
-            lines.extend([b"ET", b"Q"])
+                new_stream = pdf.make_indirect(pikepdf.Stream(pdf, b"\n".join(lines)))
 
-            new_stream = pdf.make_indirect(pikepdf.Stream(pdf, b"\n".join(lines)))
+                existing = page.get("/Contents")
+                if existing is None:
+                    page["/Contents"] = new_stream
+                elif isinstance(existing, pikepdf.Array):
+                    existing.append(new_stream)
+                else:
+                    page["/Contents"] = pikepdf.Array([existing, new_stream])
 
-            existing = page.get("/Contents")
-            if existing is None:
-                page["/Contents"] = new_stream
-            elif isinstance(existing, pikepdf.Array):
-                existing.append(new_stream)
-            else:
-                page["/Contents"] = pikepdf.Array([existing, new_stream])
+                if "/Resources" not in page:
+                    page["/Resources"] = pikepdf.Dictionary()
+                if "/Font" not in page["/Resources"]:
+                    page["/Resources"]["/Font"] = pikepdf.Dictionary()
+                page["/Resources"]["/Font"]["/F1"] = type0_font
 
-            if "/Resources" not in page:
-                page["/Resources"] = pikepdf.Dictionary()
-            if "/Font" not in page["/Resources"]:
-                page["/Resources"]["/Font"] = pikepdf.Dictionary()
-            page["/Resources"]["/Font"]["/F1"] = type0_font
+            print("  保存中...", flush=True)
+            pdf.save(tmp_path)
 
-        pdf.save(pdf_path)
+        os.replace(tmp_path, pdf_path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 def apply_ocr(pdf_path, png_files, engine='paddle', gpu=False):
     """OCRでテキストを認識→ログ出力→PDFにテキスト層を埋め込む"""
     if engine == 'paddle':
         reader = _get_paddle_reader()
+    elif engine == 'rapid':
+        reader = _get_rapid_reader()
     else:
         reader = _get_easy_reader(gpu=gpu)
 
     all_results = []
     for i, png_path in enumerate(png_files, start=1):
-        print(f"\n--- Page {i} ({osp.basename(png_path)}) ---")
+        print(f"\n--- Page {i} ({osp.basename(png_path)}) ---", flush=True)
         img_arr = np.array(Image.open(png_path).convert('RGB'))
 
         if engine == 'paddle':
@@ -296,6 +319,12 @@ def apply_ocr(pdf_path, png_files, engine='paddle', gpu=False):
                     r.get('rec_polys', []), r.get('rec_texts', []), r.get('rec_scores', [])
                 )
             ]
+        elif engine == 'rapid':
+            result = reader(img_arr)
+            page_results = []
+            if result.boxes is not None:
+                for bbox, text, conf in zip(result.boxes, result.txts, result.scores):
+                    page_results.append((bbox.tolist(), text, conf))
         else:
             page_results = [
                 (bbox, text, conf)
@@ -304,10 +333,12 @@ def apply_ocr(pdf_path, png_files, engine='paddle', gpu=False):
 
         for _, text, conf in page_results:
             print(f"  [{conf:.2f}] {text}")
+        print(f"  → {len(page_results)} 件認識")
         all_results.append(page_results)
 
+    print(f"\n全ページのOCR完了。テキスト層を埋め込み中...", flush=True)
     _embed_text_layer(pdf_path, png_files, all_results)
-    print(f"\nテキスト層を埋め込みました: {pdf_path}")
+    print(f"テキスト層を埋め込みました: {pdf_path}")
 
 
 def ask_pdf_split_mode(root):
@@ -321,7 +352,7 @@ def ask_pdf_split_mode(root):
     mode_var = tk.StringVar(value='split')
     chunk_var = tk.DoubleVar(value=25.0)
     ocr_var = tk.BooleanVar(value=False)
-    engine_var = tk.StringVar(value='paddle')
+    engine_var = tk.StringVar(value='rapid')
     gpu_var = tk.BooleanVar(value=False)
     result = tk.StringVar(value='cancel')
 
@@ -360,9 +391,11 @@ def ask_pdf_split_mode(root):
     tk.Checkbutton(ocr_frame, text="OCRテキストを埋め込む（初回はモデルDLあり・処理に時間がかかります）",
                    variable=ocr_var, command=on_ocr_toggle).pack(anchor='w')
 
+    tk.Radiobutton(engine_frame, text="RapidOCR（GPU・DirectML・推奨）",
+                   variable=engine_var, value='rapid', command=on_engine_change).pack(anchor='w')
     tk.Radiobutton(engine_frame, text="PaddleOCR（高精度・CPU）",
                    variable=engine_var, value='paddle', command=on_engine_change).pack(anchor='w')
-    tk.Radiobutton(engine_frame, text="EasyOCR（GPU対応）",
+    tk.Radiobutton(engine_frame, text="EasyOCR（GPU・CUDA）",
                    variable=engine_var, value='easy', command=on_engine_change).pack(anchor='w')
 
     tk.Radiobutton(gpu_frame, text="CPU", variable=gpu_var, value=False).pack(side='left', padx=4)

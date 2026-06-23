@@ -8,9 +8,11 @@ dependencies = [
     "fpdf2>=2.8.7",
     "img2pdf>=0.6.3",
     "numpy>=2.4.6",
+    "onnxruntime-directml>=1.24.4",
     "opencv-python>=4.13.0.92",
     "paddleocr>=3.4.1",
     "paddlepaddle==3.0.0",
     "pillow>=12.2.0",
     "pyautogui>=0.9.54",
+    "rapidocr>=3.9.0",
 ]

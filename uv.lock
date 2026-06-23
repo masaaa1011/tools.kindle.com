@@ -49,6 +49,12 @@ wheels = [
 ]
 
 [[package]]
+name = "antlr4-python3-runtime"
+version = "4.9.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034, upload-time = "2021-11-06T17:52:23.524Z" }
+
+[[package]]
 name = "anyio"
 version = "4.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -363,6 +369,14 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e6/dc/be6cbe99670cd6e4ad387123647cb08e0c32975e223f82551e914c5568a6/filelock-3.29.4.tar.gz", hash = "sha256:10cdb3656fc44541cdf30652a93fb10ec6b05325620eb316bd26893e4201538a", size = 63028, upload-time = "2026-06-13T16:12:00.744Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/37/a065dc3bd6e49423a6532c642ca7378d3f467b1ef44c2800c937af7f9739/filelock-3.29.4-py3-none-any.whl", hash = "sha256:dac1648087d5115554850d113e7dd8c83ab2d38e3435dde2d4f163847e57b767", size = 42757, upload-time = "2026-06-13T16:11:59.582Z" },
+]
+
+[[package]]
+name = "flatbuffers"
+version = "25.12.19"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e8/2d/d2a548598be01649e2d46231d151a6c56d10b964d94043a335ae56ea2d92/flatbuffers-25.12.19-py2.py3-none-any.whl", hash = "sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4", size = 26661, upload-time = "2025-12-19T23:16:13.622Z" },
 ]
 
 [[package]]
@@ -995,6 +1009,35 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4", size = 148047, upload-time = "2025-09-04T08:29:01.761Z" },
     { url = "https://files.pythonhosted.org/packages/a8/64/3708a90d1ebe202ffdeb7185f878a3c84d15c2b2c31858da2ce0583e2def/nvidia_nvtx-13.0.85-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6", size = 148878, upload-time = "2025-09-04T08:28:53.627Z" },
+]
+
+[[package]]
+name = "omegaconf"
+version = "2.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "antlr4-python3-runtime" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/3d/e4b57b8d9008c6ebe0d5eff901f91d5700cf7bdb8c8863df817463a7fd5e/omegaconf-2.3.1.tar.gz", hash = "sha256:e5e7de64aeebeddaf8e6d3f7a783b32ac2a01c0fbd9c878012caecb891a1f42a", size = 3298472, upload-time = "2026-06-11T05:05:12.885Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/0e/152509871bf30df6fc38569f52a2db9b55dd41aae957adae50a053ac7778/omegaconf-2.3.1-py3-none-any.whl", hash = "sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0", size = 79502, upload-time = "2026-06-11T05:05:09.954Z" },
+]
+
+[[package]]
+name = "onnxruntime-directml"
+version = "1.24.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
+    { name = "sympy" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/60/53/2bd2696fac19cf8ca55496a0bcfe431f3aff9579eabbb0e231dc238acf6f/onnxruntime_directml-1.24.4-cp313-cp313-win_amd64.whl", hash = "sha256:2f1031cb2281e5b27cca9efe0b9399317c7286e4d226f7a79d4ab79bbd94d19e", size = 25112253, upload-time = "2026-03-17T21:47:22.043Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/04/816932a3ade867a687e406716ca76e0774c6b921545b45818e3ebfcc54ce/onnxruntime_directml-1.24.4-cp314-cp314-win_amd64.whl", hash = "sha256:51d86bb949488e572b00422f344990a4a81d982416d73b6c0e4ced2bcd423d19", size = 25571098, upload-time = "2026-03-17T21:47:25.461Z" },
 ]
 
 [[package]]
@@ -1714,6 +1757,27 @@ wheels = [
 ]
 
 [[package]]
+name = "rapidocr"
+version = "3.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorlog" },
+    { name = "numpy" },
+    { name = "omegaconf" },
+    { name = "opencv-python" },
+    { name = "pillow" },
+    { name = "pyclipper" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "shapely" },
+    { name = "six" },
+    { name = "tqdm" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/e0/3d3c394448c3527aa99b858647b5404110c5e30a5549f9e2bc4c645bb6b8/rapidocr-3.9.0-py3-none-any.whl", hash = "sha256:f9e624d11315aa1ffe8ecf486a9ae7c2f7bef741d25a1e508fc5e25cb75dfed5", size = 27240223, upload-time = "2026-06-23T02:33:55.29Z" },
+]
+
+[[package]]
 name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1953,11 +2017,13 @@ dependencies = [
     { name = "fpdf2" },
     { name = "img2pdf" },
     { name = "numpy" },
+    { name = "onnxruntime-directml" },
     { name = "opencv-python" },
     { name = "paddleocr" },
     { name = "paddlepaddle" },
     { name = "pillow" },
     { name = "pyautogui" },
+    { name = "rapidocr" },
 ]
 
 [package.metadata]
@@ -1966,11 +2032,13 @@ requires-dist = [
     { name = "fpdf2", specifier = ">=2.8.7" },
     { name = "img2pdf", specifier = ">=0.6.3" },
     { name = "numpy", specifier = ">=2.4.6" },
+    { name = "onnxruntime-directml", specifier = ">=1.24.4" },
     { name = "opencv-python", specifier = ">=4.13.0.92" },
     { name = "paddleocr", specifier = ">=3.4.1" },
     { name = "paddlepaddle", specifier = "==3.0.0" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "pyautogui", specifier = ">=0.9.54" },
+    { name = "rapidocr", specifier = ">=3.9.0" },
 ]
 
 [[package]]
