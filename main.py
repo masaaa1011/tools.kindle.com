@@ -455,8 +455,10 @@ def convert_png_to_pdf():
     base_name = osp.basename(png_folder)
 
     def write_pdf(png_list, path):
+        print(f"PDF作成中: {osp.basename(path)} ({len(png_list)}ページ)...", flush=True)
         with open(path, 'wb') as f:
             f.write(img2pdf.convert(png_list))
+        print(f"PDF作成完了: {osp.basename(path)}", flush=True)
         if use_ocr:
             try:
                 apply_ocr(path, png_list, engine=ocr_engine, gpu=use_gpu)
@@ -480,6 +482,9 @@ def convert_png_to_pdf():
             messagebox.showerror("エラー", str(e))
             root.destroy()
             return
+        root.deiconify()
+        root.lift()
+        root.attributes('-topmost', True)
         messagebox.showinfo("完了", f"{len(png_files)} ページのPDFを保存しました。\n{output_path}")
 
     else:
@@ -503,12 +508,16 @@ def convert_png_to_pdf():
         total = len(chunks)
         try:
             for idx, chunk in enumerate(chunks, start=1):
+                print(f"\n=== チャンク {idx}/{total} ===", flush=True)
                 out_path = osp.join(out_folder, f"{base_name}_{idx:03d}.pdf")
                 write_pdf(chunk, out_path)
         except RuntimeError as e:
             messagebox.showerror("エラー", str(e))
             root.destroy()
             return
+        root.deiconify()
+        root.lift()
+        root.attributes('-topmost', True)
         messagebox.showinfo(
             "完了",
             f"{len(png_files)} ページを {total} 個のPDFに分割して保存しました。\n{out_folder}",
