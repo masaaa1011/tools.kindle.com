@@ -16,3 +16,8 @@ dependencies = [
     "pyautogui>=0.9.54",
     "rapidocr>=3.9.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.21.0",
+]
