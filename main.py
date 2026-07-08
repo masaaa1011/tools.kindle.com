@@ -96,12 +96,13 @@ def get_save_folder():
     """保存先フォルダを選択"""
     return filedialog.askdirectory(title='保存するフォルダを選択してください')
 
-def capture_and_save_pages(bbox, title):
+def capture_and_save_pages(bbox, title, img_format='png'):
     """
     ページをキャプチャして保存
     Args:
         bbox: キャプチャ範囲 (left, top, right, bottom)
         title: 保存時のタイトル
+        img_format: 保存する画像形式 ('png' または 'jpg')
     Returns:
         page - 1: 保存したページ数
     """
@@ -111,6 +112,10 @@ def capture_and_save_pages(bbox, title):
     page = 1
     prev_saved = None
 
+    # 保存形式に応じた拡張子とcv2.imwriteのパラメータ
+    ext = 'jpg' if img_format == 'jpg' else 'png'
+    write_params = [cv2.IMWRITE_JPEG_QUALITY, 95] if ext == 'jpg' else []
+
     # 保存先フォルダの設定
     cd = os.getcwd()
     os.mkdir(osp.join(base_save_folder, title))
@@ -118,7 +123,7 @@ def capture_and_save_pages(bbox, title):
 
     while True:
         # ファイル名設定と時間計測開始
-        filename = f"{page:03d}.png"
+        filename = f"{page:03d}.{ext}"
         start = time.perf_counter()
 
         while True:
@@ -144,7 +149,7 @@ def capture_and_save_pages(bbox, title):
             return page - 1
 
         # 画像保存と次ページへ
-        cv2.imwrite(filename, ss)
+        cv2.imwrite(filename, ss, write_params)
         prev_saved = ss
         old = ss
         print(f'Page: {page}, {ss.shape}, {time.perf_counter() - start:.2f} sec')
@@ -527,7 +532,7 @@ def convert_png_to_pdf():
 
 
 def ask_mode():
-    """起動時にモードを選択させる。(mode, page_key) を返す。mode は 'capture'/'pdf'/'cancel'"""
+    """起動時にモードを選択させる。(mode, page_key, img_format) を返す。mode は 'capture'/'pdf'/'cancel'"""
     root = tk.Tk()
     root.withdraw()
 
@@ -539,11 +544,17 @@ def ask_mode():
 
     result = tk.StringVar(value='cancel')
     key_var = tk.StringVar(value='right')
+    format_var = tk.StringVar(value='png')
 
     key_frame = tk.LabelFrame(dialog, text="ページめくりキー（Kindleキャプチャ時）", padx=12, pady=6)
     key_frame.pack(padx=20, pady=(0, 8), fill='x')
     tk.Radiobutton(key_frame, text="→ 右キー（次ページ）", variable=key_var, value='right').pack(side='left', padx=8)
     tk.Radiobutton(key_frame, text="← 左キー（次ページ）", variable=key_var, value='left').pack(side='left', padx=8)
+
+    format_frame = tk.LabelFrame(dialog, text="保存する画像形式（Kindleキャプチャ時）", padx=12, pady=6)
+    format_frame.pack(padx=20, pady=(0, 8), fill='x')
+    tk.Radiobutton(format_frame, text="PNG（可逆・高画質）", variable=format_var, value='png').pack(side='left', padx=8)
+    tk.Radiobutton(format_frame, text="JPG（軽量）", variable=format_var, value='jpg').pack(side='left', padx=8)
 
     btn_frame = tk.Frame(dialog, padx=20, pady=8)
     btn_frame.pack()
@@ -564,14 +575,14 @@ def ask_mode():
     root.wait_window(dialog)
     root.destroy()
 
-    return result.get(), key_var.get()
+    return result.get(), key_var.get(), format_var.get()
 
 
 def main():
     """メイン処理"""
     global base_save_folder
 
-    mode, page_key = ask_mode()
+    mode, page_key, img_format = ask_mode()
     if mode == 'pdf':
         convert_png_to_pdf()
         return
@@ -614,7 +625,7 @@ def main():
     bbox = (rect.left, rect.top, rect.right, rect.bottom)
 
     # キャプチャを実行
-    total_pages = capture_and_save_pages(bbox, title)
+    total_pages = capture_and_save_pages(bbox, title, img_format)
 
     # 完了メッセージを表示
     messagebox.showinfo("完了",
